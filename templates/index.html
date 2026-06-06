@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UGRC Raster Data Download</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+
+<body>
+  <div id="app">
+    <!-- LEFT SIDEBAR -->
+    <aside class="sidebar">
+      <div class="brand">Toolbar</div>
+
+      <nav class="menu">
+        <button class="menu-btn" id="btn-load-shp-4">Load Shapefile (.shp, .shx, .dbf, .prj)</button>
+
+        <div id="dataset-list"></div>
+
+        <!-- NEW: Job name input -->
+        <div class="row">
+          <label for="job-name">Job Name:</label>
+          <input id="job-name" class="menu-inpt" placeholder="e.g., Job 1">
+        </div>
+
+        <label for="out-crs">Output CRS:</label>
+        <div class="row">
+          <select id="out-crs-select" class="menu-inpt-full">
+            <option value="" disabled selected>Select CRS</option>
+
+            <!-- Utah Statewide -->
+            <option value="EPSG:26912">NAD83 / UTM zone 12N (EPSG:26912)</option>
+            <option value="EPSG:26913">NAD83 / UTM zone 13N (EPSG:26913)</option>
+
+            <!-- Utah State Plane (NAD83) -->
+            <option value="EPSG:32142">NAD83 / Utah North (EPSG:32142)</option>
+            <option value="EPSG:32143">NAD83 / Utah Central (EPSG:32143)</option>
+            <option value="EPSG:32144">NAD83 / Utah South (EPSG:32144)</option>
+
+            <!-- Utah State Plane (NAD83 HARN) -->
+            <option value="EPSG:3560">NAD83 / Utah North (ftUS) (EPSG:3560)</option>
+            <option value="EPSG:3566">NAD83 / Utah Central (ftUS) (EPSG:3566)</option>
+            <option value="EPSG:3567">NAD83 / Utah South (ftUS) (EPSG:3567)</option>
+
+            <!-- Utah State Plane (NAD83 2011) -->
+            <option value="EPSG:6626">NAD83(2011) / Utah North (ftUS) (EPSG:6626)</option>
+            <option value="EPSG:6625">NAD83(2011) / Utah Central (ftUS) (EPSG:6625)</option>
+            <option value="EPSG:6627">NAD83(2011) / Utah South (ftUS) (EPSG:6627)</option>
+          </select>
+        </div>
+        <div class="row">
+          <input id="out-crs" class="menu-inpt-full" placeholder="or Type EPSG Number">
+        </div>
+
+        <div class="row">
+          <label for="vertical-units">Vertical Units:</label>
+          <select id="vertical-units" class="menu-inpt">
+            <option value="feet">Feet</option>
+            <option value="meters">Meters</option>
+          </select>
+        </div>
+        <!--
+        <div class="row">
+          <label for="save-type">Save Type:</label>
+          <select id="save-type" class="menu-inpt">
+            <option value="cad">CAD Surface</option>
+            <option value="geotiff">GeoTIFF</option>
+            <option value="ascii">ASCII Grid</option>
+          </select>
+        </div>
+        -->
+        <button id="stitch-toggle" class="menu-btn">Stitch Datasets</button>
+        <button class="menu-btn" id="btn-download-lidar">Download LiDAR</button>
+      </nav>
+
+      <input type="file" id="shp-4-input" accept=".shp,.shx,.dbf,.prj" multiple style="display:none" />
+
+      <div class="footer">
+        <small>© {{ 2026 }} HAL Engineers</small>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="content">
+      <div id="map"></div>
+    </main>
+
+    <!-- RIGHT SIDEBAR (NEW) -->
+    <aside class="sidebar sidebar-right" aria-label="Jobs sidebar">
+      <div class="brand">Jobs</div>
+
+      <div class="jobs-meta">
+        <small class="muted">Submitted jobs appear here. Completed jobs can be downloaded.</small>
+      </div>
+
+      <div id="jobs-list" class="jobs-list" role="list"></div>
+
+      <div class="footer">
+        <small class="muted">Tip: Cancel/Delete removes backend files.</small>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Dataset ranking popup (shown when multiple datasets selected) -->
+  <dialog id="rank-dialog" class="rank-dialog" aria-labelledby="rank-title">
+    <form method="dialog" id="rank-form" class="rank-form">
+      <h3 id="rank-title" class="rank-title">Rank Selected Datasets</h3>
+      <p class="rank-subtitle">Drag to reorder (highest priority at top) or use the arrows.</p>
+      <ol id="rank-list" class="rank-list" aria-label="Selected datasets ranking list"></ol>
+      <div class="rank-actions">
+        <button type="button" id="rank-cancel" class="menu-btn rank-btn-secondary">Cancel</button>
+        <button type="submit" id="rank-confirm" class="menu-btn rank-btn-primary" value="confirm">Confirm Order</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+
+  <script>
+    const MAP_CENTER = [{{ center_lat }}, {{ center_lng }}];
+    const MAP_ZOOM = {{ zoom }};
+  </script>
+
+  <script src="{{ url_for('static', filename='js/main.js') }}" type="module"></script>
+</body>
+
+</html>
