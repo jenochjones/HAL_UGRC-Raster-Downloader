@@ -341,9 +341,9 @@ def mosaic_rasters_to_array(
                 arr = np.ma.masked_invalid(arr)
 
             # Force <0 to nodata BEFORE mosaicing
-            if negative_to_nodata:
+            #if negative_to_nodata:
                 # masked_where preserves existing mask and adds new mask where condition true
-                arr = np.ma.masked_where(arr < 1500, arr)
+            #    arr = np.ma.masked_where(arr < 1500, arr)
 
             # Fill all masked cells with out_nodata and cast to out_dtype
             filled = arr.filled(out_nodata).astype(out_dtype, copy=False)
@@ -466,6 +466,7 @@ def clip_array_with_geojson(mosaic_array, mosaic_transform, mosaic_meta, mosaic_
 def reproject_to_crs(src_array, src_meta, dst_crs_str: str, resampling=Resampling.bilinear):
     src_crs = src_meta["crs"]
     dst_crs = CRS.from_user_input(dst_crs_str)
+
     transform, width, height = calculate_default_transform(
         src_crs, dst_crs, src_meta["width"], src_meta["height"],
         *rasterio.transform.array_bounds(
@@ -482,9 +483,14 @@ def reproject_to_crs(src_array, src_meta, dst_crs_str: str, resampling=Resamplin
     })
 
     count = src_meta.get("count", 1)
-    dtype = src_meta.get("dtype", "float32")
-    import numpy as np
-    dst_array = np.zeros((count, height, width), dtype=dtype)
+    nodata = src_meta.get("nodata", -9999.0)
+
+    # Force float output for DEM workflows
+    dst_dtype = np.float32
+    dst_meta["dtype"] = "float32"
+    dst_meta["nodata"] = float(nodata)
+
+    dst_array = np.full((count, height, width), float(nodata), dtype=dst_dtype)
 
     for band in range(1, count + 1):
         reproject(
@@ -492,11 +498,69 @@ def reproject_to_crs(src_array, src_meta, dst_crs_str: str, resampling=Resamplin
             destination=dst_array[band - 1],
             src_transform=src_meta["transform"],
             src_crs=src_crs,
+            src_nodata=nodata,
             dst_transform=transform,
             dst_crs=dst_crs,
+            dst_nodata=float(nodata),
             resampling=resampling
         )
+
     return dst_array, dst_meta
+
+
+def convert_vertical_units(array, meta, vert_units: str):
+    """
+    Convert DEM values from meters to requested output vertical units.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        Raster array with shape (bands, rows, cols)
+    meta : dict
+        Raster metadata containing nodata and dtype
+    vert_units : str
+        Either 'meters' or 'feet'
+
+    Returns
+    -------
+    out_array : np.ndarray
+        Converted raster array
+    out_meta : dict
+        Updated metadata
+    """
+    vert_units = str(vert_units).lower().strip()
+
+    if vert_units not in ("meters", "feet"):
+        raise ValueError("vert_units must be either 'meters' or 'feet'.")
+
+    # If meters requested, leave values unchanged
+    if vert_units == "meters":
+        out_array = array.astype(np.float32, copy=True)
+        out_meta = meta.copy()
+        out_meta["dtype"] = "float32"
+        return out_array, out_meta
+
+    # Otherwise convert from meters to feet
+    meters_to_feet = 3.280839895013123
+
+    out_array = array.astype(np.float32, copy=True)
+    out_meta = meta.copy()
+    out_meta["dtype"] = "float32"
+
+    nodata = out_meta.get("nodata")
+
+    if nodata is None:
+        valid_mask = np.isfinite(out_array)
+    else:
+        if np.issubdtype(out_array.dtype, np.floating) and np.isnan(nodata):
+            valid_mask = np.isfinite(out_array)
+        else:
+            valid_mask = out_array != nodata
+
+    out_array[valid_mask] *= meters_to_feet
+
+    return out_array, out_meta
+
 
 def write_geotiff(out_path: str, array, meta):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -705,7 +769,7 @@ def download_job(job_id: str):
 # ----------------------------
 # JOB PROCESSOR
 # ----------------------------
-def process_lidar_job(job_id: str, uploaded_geojson, ranked_datasets, output_crs: str, stitch: bool):
+def process_lidar_job(job_id: str, uploaded_geojson, ranked_datasets, vert_units: str, output_crs: str, stitch: bool):
     """
     Runs in a background thread. Must not return Flask responses.
     Must tolerate job being deleted while processing (Cancel/Delete).
@@ -795,7 +859,6 @@ def process_lidar_job(job_id: str, uploaded_geojson, ranked_datasets, output_crs
             ]
 
             # 5) clip
-            
             clipped_arr, clipped_transform, clipped_meta = clip_array_with_geojson(
                 reproj_arr,
                 reproj_meta["transform"],
@@ -805,13 +868,35 @@ def process_lidar_job(job_id: str, uploaded_geojson, ranked_datasets, output_crs
                 reproj_meta["crs"]
             )
 
-            # clipped_meta.update({"crs": mosaic_crs, "transform": clipped_transform})
+            # Ensure clipped metadata reflects the clipped raster
+            clipped_meta.update({
+                "transform": clipped_transform,
+                "crs": reproj_meta["crs"]
+            })
+
+            check_cancel_or_deleted()
+
+            # 6) convert vertical units if requested
+            clipped_arr, clipped_meta = convert_vertical_units(
+                clipped_arr,
+                clipped_meta,
+                vert_units
+            )
 
             check_cancel_or_deleted()
 
             # 7) write tif
             out_tif = os.path.join(outputs_dir, f"{ds_name}.tif")
             write_geotiff(out_tif, clipped_arr, clipped_meta)
+
+            # Optional: write metadata tags describing vertical units
+            with rasterio.open(out_tif, "r+") as dst:
+                dst.update_tags(
+                    VERTICAL_UNITS=vert_units,
+                    VERTICAL_SOURCE_UNITS="meters",
+                    VALUES_CONVERTED=str(vert_units == "feet").lower()
+                )
+
             produced.append(out_tif)
 
         check_cancel_or_deleted()
@@ -857,13 +942,14 @@ def download_lidar():
     arr = data.get("data")
     job_name = data.get("job_name", "")
 
-    if not isinstance(arr, list) or len(arr) != 4:
+    if not isinstance(arr, list) or len(arr) != 5:
         return jsonify({
             "status": "error",
-            "message": "Expected JSON {data: [geojson, datasets, output_crs, stitch], job_name: '...'}"
+            "message": "Expected JSON {data: [geojson, datasets, vertical_units, output_crs, stitch], job_name: '...'}"
         }), 400
 
-    uploaded_geojson, ranked_datasets, output_crs, stitch = arr
+    uploaded_geojson, ranked_datasets, vert_units, output_crs, stitch = arr
+    print(arr)
 
     if not uploaded_geojson or not isinstance(uploaded_geojson, (dict, list)):
         return jsonify({"status": "error", "message": "Invalid or missing uploaded GeoJSON."}), 400
@@ -893,12 +979,27 @@ def download_lidar():
         JOBS[job_id] = job_record
 
     # Submit background work
-    future = EXECUTOR.submit(process_lidar_job, job_id, uploaded_geojson, ranked_datasets, output_crs, bool(stitch))
+    future = EXECUTOR.submit(
+        process_lidar_job,
+        job_id,
+        uploaded_geojson,
+        ranked_datasets,
+        vert_units,
+        output_crs,
+        bool(stitch)
+    )
+
     with JOBS_LOCK:
         if job_id in JOBS:
             JOBS[job_id]["future"] = future
 
-    logger.info("Accepted job %s: %s datasets, output CRS %s", job_id, len(ranked_datasets), output_crs)
+    logger.info(
+        "Accepted job %s: %s datasets, vertical units %s, output CRS %s",
+        job_id,
+        len(ranked_datasets),
+        vert_units,
+        output_crs
+    )
 
     return jsonify({
         "status": "accepted",
@@ -906,3 +1007,7 @@ def download_lidar():
         "job_name": job_record["job_name"],
         "message": "Job submitted and processing started."
     }), 202
+
+
+#if __name__ == '__main__':
+#    app.run(debug=True)

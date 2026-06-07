@@ -608,6 +608,8 @@ document.getElementById('btn-download-lidar')?.addEventListener('click', async (
     const selected = getSelectedDatasetObjects();
     if (selected.length === 0) { alert('Please select at least one dataset.'); return; }
 
+    const vertUnits = document.getElementById('vertical-units')?.value || 'meters';
+
     const outCrs = normalizeEpsg(document.getElementById('out-crs')?.value);
     if (!outCrs || outCrs === 'EPSG:') { alert('Please enter an Output CRS (EPSG code).'); return; }
 
@@ -620,7 +622,7 @@ document.getElementById('btn-download-lidar')?.addEventListener('click', async (
     const jobName = (document.getElementById('job-name')?.value || '').trim();
 
     // Build array: [uploaded geojson, selected datasets (ranked indices), output CRS, stitch toggle]
-    const payload = [uploadedShapefileGeoJSON, rankedIndices, outCrs, stitch];
+    const payload = [uploadedShapefileGeoJSON, rankedIndices, vertUnits, outCrs, stitch];
 
     const btn = document.getElementById('btn-download-lidar');
     if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
